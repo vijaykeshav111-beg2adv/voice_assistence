@@ -1,0 +1,12 @@
+faster-whisper
+sounddevice
+scipy
+numpy
+python-dotenv
+elevenlabs
+pygame
+groq
+httpx
+fastapi
+uvicorn
+python-multipart

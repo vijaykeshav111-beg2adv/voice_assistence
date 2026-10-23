@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice bot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;700&family=Hanken+Grotesk:wght@400;500;600&family=Noto+Sans+Devanagari:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #E8EDF2; --surface: #FFFFFF; --ink: #1A2740; --muted: #5D6B7E; --line: #CBD4DE;
+  --stt: #5668D8; --llm: #E48A2B; --tts: #1F9C86; --play: #98A5B5; --rec: #D2453D;
+  --display: "Bricolage Grotesque", "Noto Sans Devanagari", system-ui, sans-serif;
+  --body: "Hanken Grotesk", "Noto Sans Devanagari", system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 400 16px/1.5 var(--body); min-height: 100vh; }
+button, input { font: inherit; color: inherit; }
+:focus-visible { outline: 3px solid var(--stt); outline-offset: 2px; }
+
+header { max-width: 1180px; margin: 0 auto; padding: 28px 24px 8px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 20px; }
+h1 { font: 700 30px/1.1 var(--display); margin: 0; letter-spacing: -0.01em; }
+.models { color: var(--muted); font-size: 14px; }
+.notice { max-width: 1180px; margin: 12px auto 0; padding: 0 24px; }
+.notice div { background: #FFF1D6; border: 1px solid #E8C877; border-radius: 8px; padding: 10px 14px; font-size: 15px; }
+
+main { max-width: 1180px; margin: 0 auto; padding: 16px 24px 40px; display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr); gap: 20px; align-items: start; }
+@media (max-width: 880px) { main { grid-template-columns: 1fr; } }
+
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; }
+.panel h2 { font: 600 18px/1.2 var(--display); margin: 0 0 14px; }
+
+/* Conversation */
+.chat { display: flex; flex-direction: column; min-height: 560px; }
+.log { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 14px; max-height: 62vh; }
+.empty { margin: auto; text-align: center; color: var(--muted); max-width: 30ch; }
+.msg { max-width: 86%; padding: 10px 14px; border-radius: 14px; overflow-wrap: anywhere; }
+.msg.you { align-self: flex-end; background: var(--ink); color: #fff; border-bottom-right-radius: 4px; }
+.msg.bot { align-self: flex-start; background: #EEF2F6; border-bottom-left-radius: 4px; }
+.msg.err { align-self: stretch; max-width: 100%; background: #FBE4E2; border: 1px solid #E9A9A4; font-size: 15px; }
+.msg .meta { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-size: 13px; color: var(--muted); }
+.strip { display: flex; height: 6px; border-radius: 3px; overflow: hidden; flex: 1; min-width: 60px; background: var(--line); }
+.strip i { display: block; height: 100%; }
+.link { background: none; border: 0; padding: 0; color: var(--stt); cursor: pointer; text-decoration: underline; font-size: 13px; }
+
+.composer { border-top: 1px solid var(--line); padding: 16px 20px 18px; display: grid; grid-template-columns: auto 1fr; gap: 14px 16px; align-items: center; }
+.mic { width: 72px; height: 72px; border-radius: 50%; border: 0; background: var(--ink); color: #fff; cursor: pointer; display: grid; place-items: center; position: relative; transition: background .15s; }
+.mic svg { width: 28px; height: 28px; }
+.mic:hover:not(:disabled) { background: #2A3B5C; }
+.mic:disabled { background: var(--play); cursor: not-allowed; }
+.mic.recording { background: var(--rec); }
+.mic.recording::after { content: ""; position: absolute; inset: -6px; border-radius: 50%; border: 3px solid var(--rec); opacity: calc(.25 + var(--level, 0) * .75); transform: scale(calc(1 + var(--level, 0) * .18)); transition: transform .08s, opacity .08s; }
+.state { min-height: 48px; display: flex; flex-direction: column; justify-content: center; }
+.state b { font: 600 16px var(--display); }
+.state span { color: var(--muted); font-size: 14px; }
+.auto { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; cursor: pointer; }
+.auto input { width: 16px; height: 16px; accent-color: var(--stt); }
+.auto select { font: inherit; font-size: 14px; padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--card, #fff); color: inherit; }
+.typed { grid-column: 1 / -1; display: flex; gap: 8px; }
+.typed input { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: #fff; }
+.typed button { border: 1px solid var(--ink); background: #fff; border-radius: 10px; padding: 0 16px; cursor: pointer; font-weight: 600; }
+.typed button:disabled { opacity: .5; cursor: not-allowed; }
+
+/* Latency */
+.side { display: flex; flex-direction: column; gap: 20px; }
+.lat { padding: 20px; }
+.headline { font: 700 38px/1 var(--display); letter-spacing: -0.02em; }
+.headline small { font: 500 15px var(--body); color: var(--muted); letter-spacing: 0; margin-left: 6px; }
+.sub { color: var(--muted); font-size: 14px; margin: 6px 0 16px; }
+.waterfall { display: flex; height: 26px; border-radius: 6px; overflow: hidden; background: var(--line); gap: 2px; }
+.waterfall i { display: block; height: 100%; transition: flex-basis .4s; min-width: 2px; }
+.legend { list-style: none; margin: 14px 0 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px; font-size: 14px; }
+.legend li { display: flex; align-items: center; gap: 8px; }
+.legend .dot { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.legend .v { margin-left: auto; font-variant-numeric: tabular-nums; font-weight: 600; }
+.hint { color: var(--muted); font-size: 14px; margin: 0; }
+
+.hist { padding: 20px 0 8px; }
+.hist h2, .hist .tools { padding: 0 20px; }
+.scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
+th, td { padding: 8px 10px; text-align: right; white-space: nowrap; border-top: 1px solid var(--line); }
+th { font-weight: 600; color: var(--muted); border-top: 0; }
+th:first-child, td:first-child { text-align: left; padding-left: 20px; }
+th:last-child, td:last-child { padding-right: 20px; }
+td.said { text-align: left; max-width: 16ch; overflow: hidden; text-overflow: ellipsis; }
+tr.avg td { font-weight: 600; background: #F3F6F9; }
+tr.bad td { color: var(--rec); }
+.tools { display: flex; gap: 14px; padding-top: 12px; padding-bottom: 12px; border-top: 1px solid var(--line); }
+.tools a, .tools button { color: var(--stt); font-size: 14px; background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; }
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Voice bot</h1>
+  <div class="models" id="models" aria-label="Models in use"></div>
+</header>
+<div class="notice" id="notice" hidden></div>
+
+<main>
+  <section class="panel chat" aria-label="Conversation">
+    <div class="log" id="log" aria-live="polite">
+      <p class="empty" id="empty">Press the microphone and speak in Hindi, English or Hinglish. Press it again when you finish.</p>
+    </div>
+    <div class="composer">
+      <button class="mic" id="mic" aria-label="Start recording" title="Start or stop recording (Space)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+      </button>
+      <div class="state" aria-live="polite"><b id="stateTitle">Ready</b><span id="stateSub">Microphone access is requested on first use.</span></div>
+      <label class="auto"><input type="checkbox" id="autoStop" checked> Send automatically after a pause of <select id="pause" title="How long it must be quiet before your speech is sent"><option value="500">0.5 s</option><option value="800" selected>0.8 s</option><option value="1100">1.1 s</option><option value="1500">1.5 s</option></select></label>
+      <form class="typed" id="typedForm">
+        <input id="typed" type="text" placeholder="Or type a message instead" autocomplete="off" aria-label="Type a message">
+        <button id="send" type="submit">Send</button>
+      </form>
+    </div>
+  </section>
+
+  <aside class="side">
+    <section class="panel lat" aria-label="Latest reply timing">
+      <h2>Latest reply</h2>
+      <div id="latEmpty" class="hint">Timing for each stage appears after your first message.</div>
+      <div id="latBody" hidden>
+        <div class="headline"><span id="hl">0.0</span><small>seconds until the reply started</small></div>
+        <p class="sub" id="heard"></p>
+        <div class="waterfall" id="wf" role="img" aria-label="Stage durations"></div>
+        <ul class="legend" id="legend"></ul>
+        <p class="hint" id="extra" style="margin-top:12px"></p>
+      </div>
+    </section>
+
+    <section class="panel hist" aria-label="Turn history">
+      <h2>All turns</h2>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Time</th><th>You said</th><th>STT</th><th>LLM</th><th>TTS</th><th>1st audio</th></tr></thead>
+          <tbody id="rows"><tr><td colspan="6" class="hint" style="padding-left:20px">No turns yet.</td></tr></tbody>
+        </table>
+      </div>
+      <div class="tools">
+        <a href="/api/export.csv" download>Download CSV</a>
+        <button type="button" id="reset">Start new conversation</button>
+      </div>
+    </section>
+  </aside>
+</main>
+
+<script>
+/* Stages that make up "time until you hear the reply" (they run one after another before the
+   first sentence plays; later sentences are generated while earlier ones are already speaking). */
+const STAGES = [
+  { key: "transcription_seconds", name: "Speech to text", color: "var(--stt)" },
+  { key: "llm_first_sentence_seconds", name: "Language model (1st sentence)", color: "var(--llm)" },
+  { key: "tts_first_audio_seconds", name: "Text to speech (1st sentence)", color: "var(--tts)" },
+  { key: "_other", name: "Upload and overhead", color: "#B9C3CF" },
+  { key: "playback_seconds", name: "Audio playback", color: "var(--play)" },
+];
+let silenceMs = 800;         // auto-send after this much quiet once you have spoken (the dropdown changes it)
+try { silenceMs = Number(localStorage.getItem("pauseMs")) || 800; } catch { /* storage blocked: keep the default */ }
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => (Number(n) || 0).toFixed(2);
+let sessionId = crypto.randomUUID();
+let cfg = { max_record_seconds: 30, missing_keys: [] };
+let busy = false, recording = false;
+let stream, recorder, chunks = [], recStart = 0, recTimer, levelTimer, audioCtx;
+let pctx = null;             // playback AudioContext (gapless scheduling of the streamed sentences)
+let cur = null;              // playback state of the current / latest turn
+let abortCtl = null;
+
+function el(tag, props = {}, ...kids) {
+  const n = Object.assign(document.createElement(tag), props);
+  kids.forEach((k) => n.append(k));
+  return n;
+}
+function setState(title, sub) { $("stateTitle").textContent = title; $("stateSub").textContent = sub || ""; }
+function lockUI(on) {
+  busy = on;
+  $("mic").disabled = on && !recording;
+  $("send").disabled = on;
+  $("typed").disabled = on;
+}
+function isPlaying() { return !!cur && cur.sources.size > 0; }
+function idleState() {
+  if (!recording && !busy && !isPlaying()) setState("Ready", "Press the microphone to talk again.");
+}
+function ensureAudio() {
+  if (!pctx) pctx = new (window.AudioContext || window.webkitAudioContext)();
+  if (pctx.state === "suspended") pctx.resume();
+}
+
+/* ---------- Setup ---------- */
+async function init() {
+  $("pause").value = String(silenceMs);
+  $("pause").onchange = () => {
+    silenceMs = Number($("pause").value) || 800;
+    try { localStorage.setItem("pauseMs", String(silenceMs)); } catch { /* ignore */ }
+  };
+  try { cfg = await (await fetch("/api/config")).json(); } catch { /* server offline */ }
+  $("models").textContent = cfg.llm ? `${cfg.stt}  |  ${cfg.llm}  |  ElevenLabs ${cfg.tts}` : "";
+  if (cfg.missing_keys?.length) {
+    const n = $("notice");
+    n.hidden = false;
+    n.append(el("div", { textContent: `Add ${cfg.missing_keys.join(" and ")} to your .env file and restart the server.` }));
+    lockUI(true);
+    setState("Setup needed", "The server has no API keys.");
+  }
+  refreshHistory();
+}
+
+/* ---------- Recording ---------- */
+async function startRecording() {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+  } catch (e) {
+    setState("Microphone blocked", "Allow microphone access in the browser address bar, then try again.");
+    return;
+  }
+  fetch("/api/warm", { method: "POST" }).catch(() => {});   // open the API connections while you talk
+  const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"].find((m) => window.MediaRecorder && MediaRecorder.isTypeSupported(m));
+  recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+  chunks = [];
+  recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+  recorder.onstop = onRecorded;
+  recorder.start();
+  recording = true;
+  recStart = performance.now();
+  $("mic").classList.add("recording");
+  $("mic").setAttribute("aria-label", "Stop recording");
+  $("send").disabled = true;
+  watchLevel();
+  recTimer = setInterval(() => {
+    const s = (performance.now() - recStart) / 1000;
+    const hint = $("autoStop").checked ? "It sends when you pause, or press the microphone." : "Press the microphone again to send.";
+    setState("Listening", `${s.toFixed(1)} s. ${hint}`);
+    if (s >= cfg.max_record_seconds) stopRecording();
+  }, 100);
+}
+function watchLevel() {
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 2048;
+  audioCtx.createMediaStreamSource(stream).connect(analyser);
+  const buf = new Uint8Array(analyser.fftSize);
+  let noiseFloor = 0, heardSpeech = false, lastVoice = 0;
+  levelTimer = setInterval(() => {
+    analyser.getByteTimeDomainData(buf);
+    let peak = 0;
+    for (const v of buf) peak = Math.max(peak, Math.abs(v - 128));
+    $("mic").style.setProperty("--level", Math.min(1, peak / 60).toFixed(2));
+    const now = performance.now(), elapsed = now - recStart;
+    if (elapsed < 400) { noiseFloor = Math.max(noiseFloor, peak); return; }   // measure room noise first
+    if (peak > Math.max(10, noiseFloor * 2.5)) { heardSpeech = true; lastVoice = now; }
+    else if ($("autoStop").checked && heardSpeech && now - lastVoice > silenceMs && elapsed > 1000) stopRecording();
+  }, 40);
+}
+function stopRecording() {
+  if (!recording) return;
+  recording = false;
+  clearInterval(recTimer);
+  clearInterval(levelTimer);
+  audioCtx && audioCtx.close();
+  $("mic").classList.remove("recording");
+  $("mic").setAttribute("aria-label", "Start recording");
+  recorder.stop();
+  stream.getTracks().forEach((t) => t.stop());
+}
+function onRecorded() {
+  const seconds = (performance.now() - recStart) / 1000;
+  const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+  if (seconds < 0.4 || blob.size < 500) {
+    setState("Too short", "Hold on a little longer before pressing stop.");
+    $("send").disabled = false;
+    return;
+  }
+  sendTurn({ blob, seconds });
+}
+
+/* ---------- Gapless playback of streamed sentences ---------- */
+function newPlayback(releasedAt) {
+  return { releasedAt, buffers: [], sources: new Set(), startCtx: null, endCtx: 0, streamDone: false,
+           queued: 0, chain: Promise.resolve(), stopped: false, reported: false, noReport: false,
+           turn: null, heardAfter: null };
+}
+function b64ToBytes(b64) { return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)); }
+function enqueueClip(p, b64) {
+  p.queued++;
+  p.chain = p.chain.then(async () => {
+    try {
+      if (p.stopped) return;
+      const buf = await pctx.decodeAudioData(b64ToBytes(b64).buffer);
+      if (p.stopped) return;
+      p.buffers.push(buf);
+      scheduleBuffer(p, buf);
+    } catch { /* an undecodable clip is skipped */ }
+    finally { p.queued--; maybeFinish(p); }
+  });
+}
+function scheduleBuffer(p, buf) {
+  const when = Math.max(pctx.currentTime + 0.02, p.endCtx);
+  const src = pctx.createBufferSource();
+  src.buffer = buf;
+  src.connect(pctx.destination);
+  src.onended = () => { p.sources.delete(src); maybeFinish(p); };
+  p.sources.add(src);
+  src.start(when);
+  p.endCtx = when + buf.duration;
+  if (p.startCtx === null) {
+    p.startCtx = when;
+    p.heardAfter = (performance.now() + (when - pctx.currentTime) * 1000 - p.releasedAt) / 1000;
+    $("heard").textContent = `You heard the reply ${p.heardAfter.toFixed(2)} s after you finished speaking (includes upload and network).`;
+    lockUI(false);                                  // you may interrupt from now on
+    setState("Speaking", "Press the microphone to interrupt.");
+  }
+}
+function maybeFinish(p) {
+  if (p === cur && p.streamDone && p.queued === 0 && p.sources.size === 0) finishPlayback(p);
+}
+function finishPlayback(p) {
+  if (p.reported) return;
+  p.reported = true;
+  if (p.startCtx !== null && !p.noReport && p.turn) {
+    const secs = Math.max(0, Math.min(pctx.currentTime, p.endCtx) - p.startCtx);
+    p.turn.playback_seconds = secs;
+    renderWaterfall(p.turn);
+    reportPlayback(p.turn.turn_id, secs, p.heardAfter, 3);
+  }
+  idleState();
+}
+function reportPlayback(turnId, secs, heard, tries) {
+  fetch(`/api/turn/${turnId}/playback`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ playback_seconds: secs, heard_after_seconds: heard }),
+  }).then((r) => {
+    if (r.status === 404 && tries > 0) setTimeout(() => reportPlayback(turnId, secs, heard, tries - 1), 700);   // record not saved yet
+    else refreshHistory();
+  }).catch(() => {});
+}
+/* Stop speaking and cancel the request that is still streaming (saves TTS credits). */
+function interrupt() {
+  if (abortCtl) { abortCtl.abort(); abortCtl = null; }
+  if (cur) {
+    cur.stopped = true;
+    cur.sources.forEach((s) => { s.onended = null; try { s.stop(); } catch { /* already stopped */ } });
+    cur.sources.clear();
+    finishPlayback(cur);
+  }
+}
+function replay(buffers) {
+  interrupt();
+  ensureAudio();
+  const p = newPlayback(performance.now());
+  p.noReport = true; p.streamDone = true;
+  cur = p;
+  buffers.forEach((b) => scheduleBuffer(p, b));
+}
+
+/* ---------- Sending a turn (streamed reply) ---------- */
+async function sendTurn({ blob, seconds, text }) {
+  const releasedAt = performance.now();
+  ensureAudio();
+  interrupt();
+  abortCtl = new AbortController();
+  const p = cur = newPlayback(releasedAt);
+  lockUI(true);
+  $("empty")?.remove();
+  $("heard").textContent = "";
+  if (text) addMsg("you", text);
+  setState("Working on the reply", "Transcribing, thinking and generating speech.");
+
+  const fd = new FormData();
+  fd.append("session_id", sessionId);
+  if (blob) { fd.append("audio", blob, "speech." + (blob.type.includes("mp4") ? "mp4" : "webm")); fd.append("recording_seconds", seconds.toFixed(3)); }
+  if (text) fd.append("text", text);
+
+  let botNode = null;
+  const handle = (ev) => {
+    if (ev.type === "start") { p.turnId = ev.turn_id; }
+    else if (ev.type === "stt") {
+      addMsg("you", ev.text || "(nothing recognised)");
+      setState("Thinking", "Generating the reply.");
+    } else if (ev.type === "text") {
+      if (!botNode) { botNode = addMsg("bot", ""); botNode._text = botNode.firstChild; }
+      botNode._text.textContent += (botNode._text.textContent ? " " : "") + ev.text;
+      $("log").scrollTop = $("log").scrollHeight;
+    } else if (ev.type === "clip") {
+      enqueueClip(p, ev.audio_b64);
+    } else if (ev.type === "done") {
+      const t = ev.turn;
+      p.turn = t;
+      if (botNode) { botNode._replay = () => replay(p.buffers); attachMeta(botNode, t); }
+      showLatency(t);
+      refreshHistory();
+      if (t.status === "tts_error") addMsg("err", `Voice generation failed for part of the answer. ${t.error}`);
+    } else if (ev.type === "error") {
+      addMsg("err", `Could not complete the ${ev.stage || "request"} step: ${ev.error}`);
+      setState("Something went wrong", "Check the message above, then try again.");
+      if (ev.turn) showLatency(ev.turn);
+      refreshHistory();
+    }
+  };
+
+  try {
+    const res = await fetch("/api/turn", { method: "POST", body: fd, signal: abortCtl.signal });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      addMsg("err", `Could not complete the ${data.stage || "request"} step: ${data.error || res.statusText}`);
+      setState("Something went wrong", "Check the message above, then try again.");
+      return;
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i).trim();
+        buf = buf.slice(i + 1);
+        if (line) handle(JSON.parse(line));
+      }
+    }
+  } catch (e) {
+    if (e.name !== "AbortError") addMsg("err", "Could not reach the server. Make sure `python server.py` is still running.");
+  } finally {
+    p.streamDone = true;
+    if (cur === p) { lockUI(false); maybeFinish(p); idleState(); }
+  }
+}
+
+/* ---------- Rendering ---------- */
+function stageValue(t, st) {
+  if (st.key !== "_other") return t[st.key] || 0;
+  const used = (t.transcription_seconds || 0) + (t.llm_first_sentence_seconds || 0) + (t.tts_first_audio_seconds || 0);
+  return Math.max(0, (t.time_to_first_audio_seconds || 0) - used);
+}
+function strip(turn) {
+  const s = el("div", { className: "strip", title: "Speech to text / language model / text to speech (to first audio)" });
+  STAGES.slice(0, 3).forEach((st) => s.append(el("i", { style: `flex:${turn[st.key] || 0} 0 0; background:${st.color}` })));
+  return s;
+}
+function addMsg(kind, text) {
+  const n = el("div", { className: `msg ${kind}` });
+  n.append(el("div", { textContent: text }));
+  $("log").append(n);
+  $("log").scrollTop = $("log").scrollHeight;
+  return n;
+}
+function attachMeta(n, turn) {
+  const meta = el("div", { className: "meta" }, strip(turn), el("span", { textContent: `${fmt(turn.response_latency_seconds)} s to first audio` }));
+  const rp = el("button", { className: "link", type: "button", textContent: "Replay" });
+  rp.onclick = () => n._replay && n._replay();
+  meta.append(rp);
+  n.append(meta);
+}
+function renderWaterfall(t) {
+  const wf = $("wf"), lg = $("legend");
+  wf.replaceChildren(); lg.replaceChildren();
+  STAGES.forEach((st) => {
+    const v = stageValue(t, st);
+    if (st.key === "_other" && v < 0.005) return;
+    wf.append(el("i", { style: `flex:${Math.max(v, 0.001)} 0 0; background:${st.color}`, title: `${st.name}: ${fmt(v)} s` }));
+    const li = el("li");
+    li.append(el("span", { className: "dot", style: `background:${st.color}` }), st.name, el("span", { className: "v", textContent: `${fmt(v)} s` }));
+    lg.append(li);
+  });
+  $("extra").textContent = `Speech to text ran on: ${t.stt_backend || "n/a"}. Language model: first token ${fmt(t.llm_first_token_seconds)} s, whole answer ${fmt(t.llm_seconds)} s. ` +
+    `All audio ready after ${fmt(t.server_total_seconds)} s (${t.sentences || 0} sentence${t.sentences === 1 ? "" : "s"}).`;
+}
+function showLatency(t) {
+  $("latEmpty").hidden = true; $("latBody").hidden = false;
+  $("hl").textContent = fmt(t.response_latency_seconds);
+  renderWaterfall(t);
+}
+
+async function refreshHistory() {
+  let turns = [];
+  try { turns = (await (await fetch("/api/history?limit=100")).json()).turns; } catch { return; }
+  const body = $("rows");
+  if (!turns.length) return;
+  body.replaceChildren();
+  turns.slice().reverse().forEach((t) => {
+    const tr = el("tr", { className: t.status.includes("error") ? "bad" : "" });
+    tr.append(
+      el("td", { textContent: t.time }),
+      el("td", { className: "said", textContent: t.user_input || "-", title: t.user_input }),
+      el("td", { textContent: fmt(t.transcription_seconds) }),
+      el("td", { textContent: fmt(t.llm_first_sentence_seconds || t.llm_seconds) }),
+      el("td", { textContent: fmt(t.tts_first_audio_seconds || t.tts_generation_seconds) }),
+      el("td", { textContent: fmt(t.response_latency_seconds) }),
+    );
+    body.append(tr);
+  });
+  const ok = turns.filter((t) => t.status === "success" && t.time_to_first_audio_seconds > 0);   // only turns from the streaming pipeline
+  if (ok.length) {
+    const avg = (f) => ok.reduce((s, t) => s + (f(t) || 0), 0) / ok.length;
+    const tr = el("tr", { className: "avg" });
+    tr.append(el("td", { textContent: "Average" }), el("td", { className: "said", textContent: `${ok.length} streaming turns` }),
+      el("td", { textContent: fmt(avg((t) => t.transcription_seconds)) }),
+      el("td", { textContent: fmt(avg((t) => t.llm_first_sentence_seconds || t.llm_seconds)) }),
+      el("td", { textContent: fmt(avg((t) => t.tts_first_audio_seconds || t.tts_generation_seconds)) }),
+      el("td", { textContent: fmt(avg((t) => t.response_latency_seconds)) }));
+    body.prepend(tr);
+  }
+}
+
+/* ---------- Events ---------- */
+$("mic").onclick = () => {
+  ensureAudio();
+  if (recording) return stopRecording();
+  interrupt();                       // pressing the mic while the bot talks interrupts it
+  startRecording();
+};
+$("typedForm").onsubmit = (e) => {
+  e.preventDefault();
+  const v = $("typed").value.trim();
+  if (!v || busy) return;
+  $("typed").value = "";
+  sendTurn({ text: v });
+};
+document.addEventListener("keydown", (e) => {
+  if (e.code === "Space" && e.target === document.body) { e.preventDefault(); $("mic").click(); }
+});
+$("reset").onclick = async () => {
+  if (recording) return;
+  interrupt();
+  const fd = new FormData(); fd.append("session_id", sessionId);
+  await fetch("/api/reset", { method: "POST", body: fd }).catch(() => {});
+  sessionId = crypto.randomUUID();
+  $("log").replaceChildren(el("p", { className: "empty", id: "empty", textContent: "New conversation. The bot has forgotten the earlier messages." }));
+  setState("Ready", "Press the microphone to talk.");
+};
+init();
+</script>
+</body>
+</html>
