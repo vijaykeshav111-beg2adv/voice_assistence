@@ -1,23 +1,32 @@
-# Environment and secrets
+﻿# Secrets
 .env
 .env.*
 !.env.example
 
-# Python
-__pycache__/
-*.py[cod]
+# Python environments
 .venv/
 .venv312/
 venv/
 
-# Logs and generated audio
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Logs and metadata
 logs/
-audio/
+*.log
 
-# IDE
+# Generated audio
+edge_test.mp3
+edge_fallback_test.mp3
+
+# Backup files
+*.bak
+*.bak2
+*_BACKUP.py
+.gitignore.backup
+
+# Editor and test caches
 .vscode/
-.idea/
-
-# OS
-.DS_Store
-Thumbs.db
+.pytest_cache/
+.mypy_cache/

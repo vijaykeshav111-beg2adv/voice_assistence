@@ -16,6 +16,8 @@ import os
 import re
 import threading
 import time
+import asyncio
+import edge_tts
 import uuid  # noqa: F401  (kept for callers that import it from core)
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
@@ -76,13 +78,17 @@ logging.basicConfig(
 for _noisy in ("httpx", "httpcore", "huggingface_hub", "faster_whisper", "urllib3", "filelock"):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
 
+
 SYSTEM_PROMPT = (
-    "You are a helpful voice assistant. Understand Hindi, English and Hinglish, and reply in "
-    "the same language the user uses. Your reply is spoken aloud, so use plain spoken sentences "
-    "only: no markdown, bullet points, numbered lists, headings, emojis or symbols. Keep it short, "
-    "at most two short sentences (under 40 words), and go longer only if the user explicitly asks for detail. "
-    "If you do not know something, say so honestly."
+    "You are a concise, natural voice assistant for a doctor appointment "
+    "booking application. Respond to the user's latest message in plain text. "
+    "No tools or functions are available in this language-model request. "
+    "Do not call, request, or emit tool or function calls. "
+    "Do not claim to book, reschedule, cancel, or check database records. "
+    "The application's separate backend handles appointment operations. "
+    "Keep responses natural, helpful, and conversational."
 )
+
 
 # Order of the CSV columns. The CSV is regenerated from the JSONL on every write, so adding a
 # column here never breaks older rows (they just show an empty cell).
@@ -789,3 +795,104 @@ def run_turn(conversation, rec, *, audio=None, audio_suffix=".webm", text="", in
         if not finished:
             _rollback()
             _finish()
+
+def _tts_clip(text):
+    """Try ElevenLabs first, then fall back to Edge TTS.
+    Returns {"audio", "first_byte", "seconds", "done_at"}.
+    """
+    last_exc = None
+
+    # Primary provider: ElevenLabs
+    for attempt in (1, 2):
+        started = time.perf_counter()
+
+        try:
+            parts, first = [], None
+
+            for part in eleven_client().text_to_speech.convert(
+                voice_id=VOICE_ID,
+                text=text,
+                model_id=TTS_MODEL,
+                output_format=TTS_OUTPUT_FORMAT,
+            ):
+                if part:
+                    if first is None:
+                        first = time.perf_counter() - started
+                    parts.append(part)
+
+            audio = b"".join(parts)
+
+            if not audio:
+                raise RuntimeError("ElevenLabs returned no audio")
+
+            done = time.perf_counter()
+
+            return {
+                "audio": audio,
+                "first_byte": first or 0.0,
+                "seconds": done - started,
+                "done_at": done,
+            }
+
+        except Exception as exc:
+            last_exc = exc
+            logging.warning(
+                "ElevenLabs TTS attempt %d failed: %s",
+                attempt,
+                exc,
+            )
+
+            if attempt == 1:
+                time.sleep(0.25)
+
+    # Fallback provider: Edge TTS
+    started = time.perf_counter()
+
+    async def generate_edge_audio():
+        parts = []
+        first = None
+
+        voice = "en-IN-NeerjaNeural"
+
+        communicate = edge_tts.Communicate(
+            text=text,
+            voice=voice,
+        )
+
+        async for chunk in communicate.stream():
+            if chunk.get("type") == "audio":
+                data = chunk.get("data", b"")
+
+                if data:
+                    if first is None:
+                        first = time.perf_counter() - started
+                    parts.append(data)
+
+        audio = b"".join(parts)
+
+        if not audio:
+            raise RuntimeError("Edge TTS returned no audio")
+
+        return audio, first
+
+    try:
+        audio, first = asyncio.run(generate_edge_audio())
+        done = time.perf_counter()
+
+        logging.info("TTS fallback succeeded using Edge TTS")
+
+        return {
+            "audio": audio,
+            "first_byte": first or 0.0,
+            "seconds": done - started,
+            "done_at": done,
+        }
+
+    except Exception as edge_exc:
+        logging.exception("Edge TTS fallback failed")
+
+        raise RuntimeError(
+            f"Both TTS providers failed. "
+            f"ElevenLabs error: {last_exc}; "
+            f"Edge TTS error: {edge_exc}"
+        ) from edge_exc

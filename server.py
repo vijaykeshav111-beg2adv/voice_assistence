@@ -1,23 +1,37 @@
-"""Web server for the voice bot.   Run:  python server.py   then open http://localhost:8000"""
 import base64
 import json
+import logging
 import threading
 import uuid
 
+from datetime import date, time
+
 import uvicorn
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import core
 
+from appointments import (
+    book_appointment,
+    get_appointment,
+    cancel_appointment,
+    reschedule_appointment,
+)
+
+from voice_appointments import (
+    handle_appointment_text,
+    reset_appointment_session,
+)
+from slots import get_active_doctors, get_available_slots
 app = FastAPI(title="Voice Bot")
 STATIC = core.BASE_DIR / "static"
 
 _sessions = {}
 _sessions_lock = threading.Lock()
 
-
+logging.basicConfig(level=logging.INFO)
 def conversation_for(session_id):
     with _sessions_lock:
         return _sessions.setdefault(session_id, core.new_conversation())
@@ -91,7 +105,17 @@ def turn(
     conv = conversation_for(session_id)
 
     def stream():
-        for event in core.run_turn(conv, rec, audio=audio_bytes, audio_suffix=suffix, text=text):
+          def appointment_intercept(user_text):
+                return handle_appointment_text(session_id, user_text)
+      
+          for event in core.run_turn(
+                conv,
+                rec,
+                audio=audio_bytes,
+                audio_suffix=suffix,
+                text=text,
+                intercept=appointment_intercept,
+            ):
             yield _line(event)
 
     return StreamingResponse(
@@ -124,8 +148,9 @@ def history(limit: int = 50):
 def reset(session_id: str = Form(...)):
     with _sessions_lock:
         _sessions.pop(session_id, None)
-    return {"ok": True}
 
+    reset_appointment_session(session_id)
+    return {"ok": True}
 
 @app.get("/api/export.csv")
 def export_csv():
@@ -134,6 +159,144 @@ def export_csv():
     return FileResponse(core.METADATA_CSV, media_type="text/csv", filename="conversation_metadata.csv")
 
 
+class AppointmentRequest(BaseModel):
+    patient_name: str = Field(min_length=1, max_length=100)
+    phone: str = Field(min_length=7, max_length=20)
+    doctor_name: str = Field(min_length=1, max_length=100)
+    appointment_date: date
+    appointment_time: time
+
+
+class AppointmentChange(BaseModel):
+    phone: str = Field(min_length=7, max_length=20)
+    appointment_date: date
+    appointment_time: time
+
+
+class AppointmentIdentity(BaseModel):
+    phone: str = Field(min_length=7, max_length=20)
+
+
+@app.post("/api/appointments", status_code=201)
+def api_book_appointment(body: AppointmentRequest):
+    try:
+        result = book_appointment(**body.model_dump())
+        return {"success": True, "appointment": result}
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to book appointment. Please try again.",
+        )
+
+
+@app.get("/api/appointments/{appointment_id}")
+def api_get_appointment(appointment_id: int, phone: str):
+    result = get_appointment(appointment_id, phone)
+
+    if not result:
+        raise HTTPException(
+            status_code=404,
+            detail="Appointment not found.",
+        )
+
+    return {"success": True, "appointment": result}
+
+
+@app.patch("/api/appointments/{appointment_id}/reschedule")
+def api_reschedule(appointment_id: int, body: AppointmentChange):
+    try:
+        result = reschedule_appointment(
+            appointment_id=appointment_id,
+            phone=body.phone,
+            new_date=body.appointment_date,
+            new_time=body.appointment_time,
+        )
+
+        if not result:
+            raise HTTPException(
+                status_code=404,
+                detail="Appointment not found or no longer active.",
+            )
+
+        return {"success": True, "appointment": result}
+
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to reschedule appointment.",
+        )
+
+
+@app.patch("/api/appointments/{appointment_id}/cancel")
+def api_cancel(appointment_id: int, body: AppointmentIdentity):
+    try:
+        cancelled = cancel_appointment(appointment_id, body.phone)
+
+        if not cancelled:
+            raise HTTPException(
+                status_code=404,
+                detail="Appointment not found or already cancelled.",
+            )
+
+        return {
+            "success": True,
+            "appointment_id": appointment_id,
+            "status": "cancelled",
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to cancel appointment.",
+        )
+@app.get("/api/doctors")
+def api_get_doctors():
+    try:
+        return {
+            "success": True,
+            "doctors": get_active_doctors(),
+        }
+    except Exception:
+        logging.exception("Failed to fetch doctors")
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to fetch doctors.",
+        )
+
+
+@app.get("/api/doctors/{doctor_id}/slots")
+def api_get_slots(doctor_id: int, date: date):
+    try:
+        result = get_available_slots(doctor_id, date)
+
+        if result is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Active doctor not found.",
+            )
+
+        return {
+            "success": True,
+            **result,
+        }
+
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception:
+        logging.exception("Failed to fetch available slots")
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to fetch available slots.",
+        )
 if __name__ == "__main__":
     if core.missing_keys():
         print("Warning:", ", ".join(core.missing_keys()), "missing - the UI will show a setup notice.")
