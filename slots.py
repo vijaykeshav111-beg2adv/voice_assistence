@@ -1,3 +1,4 @@
+
 from datetime import date, datetime, time, timedelta
 
 from db import get_connection
@@ -9,10 +10,13 @@ def get_active_doctors():
 
     try:
         cursor.execute("""
-            SELECT id, name, specialization
+            SELECT
+                id,
+                doctor_name AS name,
+                specialty AS specialization
             FROM doctors
-            WHERE is_active = 1
-            ORDER BY specialization, name
+            WHERE active = 1
+            ORDER BY specialty, doctor_name
         """)
         return cursor.fetchall()
     finally:
@@ -29,9 +33,9 @@ def get_available_slots(doctor_id: int, selected_date: date):
 
     try:
         cursor.execute("""
-            SELECT id, name
+            SELECT id, doctor_name AS name
             FROM doctors
-            WHERE id = %s AND is_active = 1
+            WHERE id = %s AND active = 1
         """, (doctor_id,))
 
         doctor = cursor.fetchone()
@@ -59,10 +63,9 @@ def get_available_slots(doctor_id: int, selected_date: date):
         """, (doctor_id, selected_date))
 
         booked_times = {
-             _to_time(row["appointment_time"])
-             for row in cursor.fetchall()
+            _to_time(row["appointment_time"])
+            for row in cursor.fetchall()
         }
-
 
         now = datetime.now()
         available = []
@@ -78,10 +81,7 @@ def get_available_slots(doctor_id: int, selected_date: date):
             while current + timedelta(minutes=duration) <= closing:
                 slot_time = current.time()
 
-                if (
-                    slot_time not in booked_times
-                    and current > now
-                ):
+                if slot_time not in booked_times and current > now:
                     available.append(slot_time.strftime("%H:%M"))
 
                 current += timedelta(minutes=duration)
@@ -96,8 +96,6 @@ def get_available_slots(doctor_id: int, selected_date: date):
     finally:
         cursor.close()
         conn.close()
-
-
 
 
 def _to_time(value) -> time:
