@@ -1,5 +1,4 @@
-
-from datetime import date, datetime, time
+from datetime import date, time
 
 from mysql.connector import IntegrityError
 
@@ -18,7 +17,6 @@ def _format_time(value) -> str:
     """Format a MySQL TIME value for API and voice responses."""
     if isinstance(value, time):
         return value.strftime("%H:%M:%S")
-
     return str(value)
 
 
@@ -35,7 +33,6 @@ def book_appointment(
 
     if not patient_name or not doctor_name:
         raise ValueError("Patient name and doctor name are required.")
-
     if not phone or len(phone) > 20:
         raise ValueError("A valid phone number is required.")
 
@@ -47,17 +44,16 @@ def book_appointment(
     try:
         conn.start_transaction()
 
-        # Resolve the doctor's database ID.
+        # TiDB doctors schema uses doctor_name, specialty, and active.
         cursor.execute(
             """
-            SELECT id, name
+            SELECT id, doctor_name AS name
             FROM doctors
-            WHERE name = %s AND is_active = 1
+            WHERE doctor_name = %s AND active = 1
             """,
             (doctor_name,),
         )
         doctor = cursor.fetchone()
-
         if not doctor:
             raise ValueError("The selected doctor is not active.")
 
@@ -81,11 +77,10 @@ def book_appointment(
             (patient_id,),
         )
         patient = cursor.fetchone()
-
         if not patient:
             raise RuntimeError("Could not retrieve the patient record.")
 
-        # Check for an existing active booking.
+        # Avoid booking a slot that is already booked.
         cursor.execute(
             """
             SELECT id
@@ -96,20 +91,14 @@ def book_appointment(
               AND status = 'booked'
             FOR UPDATE
             """,
-            (
-                doctor["id"],
-                appointment_date,
-                appointment_time,
-            ),
+            (doctor["id"], appointment_date, appointment_time),
         )
-
         if cursor.fetchone():
             raise ValueError(
                 "That doctor already has a booking at this time. "
                 "Please choose another slot."
             )
 
-        # Save using the actual database schema.
         cursor.execute(
             """
             INSERT INTO appointments (
@@ -121,12 +110,7 @@ def book_appointment(
             )
             VALUES (%s, %s, %s, %s, 'booked')
             """,
-            (
-                patient_id,
-                doctor["id"],
-                appointment_date,
-                appointment_time,
-            ),
+            (patient_id, doctor["id"], appointment_date, appointment_time),
         )
 
         appointment_id = cursor.lastrowid
@@ -148,13 +132,11 @@ def book_appointment(
         if conn.in_transaction:
             conn.rollback()
 
-        # MySQL error 1062 means a duplicate unique-key value.
         if exc.errno == 1062:
             raise ValueError(
                 "This appointment slot has just been booked. "
                 "Please choose another available time."
             ) from exc
-
         raise
 
     except Exception:
@@ -180,7 +162,7 @@ def get_appointment(appointment_id: int, phone: str):
                 a.doctor_id,
                 p.name AS patient_name,
                 p.phone,
-                d.name AS doctor_name,
+                d.doctor_name AS doctor_name,
                 a.appointment_date,
                 a.appointment_time,
                 a.status
@@ -193,13 +175,9 @@ def get_appointment(appointment_id: int, phone: str):
         )
 
         row = cursor.fetchone()
-
         if row:
             row["appointment_date"] = row["appointment_date"].isoformat()
-            row["appointment_time"] = _format_time(
-                row["appointment_time"]
-            )
-
+            row["appointment_time"] = _format_time(row["appointment_time"])
         return row
 
     finally:
@@ -223,7 +201,6 @@ def cancel_appointment(appointment_id: int, phone: str):
             """,
             (appointment_id, phone.strip()),
         )
-
         cancelled = cursor.rowcount == 1
         conn.commit()
         return cancelled
@@ -251,7 +228,6 @@ def reschedule_appointment(
 
     try:
         conn.start_transaction()
-
         cursor.execute(
             """
             SELECT a.id, a.doctor_id
@@ -264,12 +240,31 @@ def reschedule_appointment(
             """,
             (appointment_id, phone.strip()),
         )
-
         current = cursor.fetchone()
 
         if not current:
             conn.rollback()
             return None
+
+        # Do not move an appointment into a slot already booked for this doctor.
+        cursor.execute(
+            """
+            SELECT id
+            FROM appointments
+            WHERE doctor_id = %s
+              AND appointment_date = %s
+              AND appointment_time = %s
+              AND status = 'booked'
+              AND id <> %s
+            FOR UPDATE
+            """,
+            (current["doctor_id"], new_date, new_time, appointment_id),
+        )
+        if cursor.fetchone():
+            raise ValueError(
+                "That doctor already has a booking at this time. "
+                "Please choose another slot."
+            )
 
         cursor.execute(
             """
@@ -280,7 +275,6 @@ def reschedule_appointment(
             """,
             (new_date, new_time, appointment_id),
         )
-
         conn.commit()
 
         return {
@@ -294,13 +288,11 @@ def reschedule_appointment(
     except IntegrityError as exc:
         if conn.in_transaction:
             conn.rollback()
-
         if exc.errno == 1062:
             raise ValueError(
                 "That doctor already has a booking at this time. "
                 "Please choose another slot."
             ) from exc
-
         raise
 
     except Exception:
